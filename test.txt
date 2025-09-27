@@ -1,1 +1,2 @@
 conflict test
+add text
