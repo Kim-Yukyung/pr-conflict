@@ -13,7 +13,7 @@ jobs:
       - uses: actions/checkout@v3
         with:
           fetch-depth: 0
-          token: ${{ secrets.PAT }}
+          token: ${{ secrets.PAT_KEY }}
 
       - name: Check single PR conflicts (for PR events)
         if: github.event_name == 'pull_request'
@@ -40,7 +40,7 @@ jobs:
                   \"fields\": [
                     {
                       \"name\": \"PR 정보\",
-                      \"value\": \"[#${{ github.event.pull_request.number }}](${{ github.event.pull_request.html_url }}) | $ESCAPED_TITLE\",
+                      \"value\": \"[#${{ github.event.pull_request.number }}](${{ github.event.pull_request.html_url }}) $ESCAPED_TITLE\",
                       \"inline\": false
                     },
                     {
@@ -64,7 +64,7 @@ jobs:
           
           RESPONSE=$(curl -s \
             -H "Accept: application/vnd.github.v3+json" \
-            -H "Authorization: Bearer ${{ secrets.PAT }}" \
+            -H "Authorization: Bearer ${{ secrets.PAT_KEY }}" \
             "https://api.github.com/repos/${{ github.repository }}/pulls?state=open&per_page=100")
           
           if echo "$RESPONSE" | grep -q '"message".*"Resource not accessible"'; then
@@ -95,7 +95,7 @@ jobs:
             
             PR_INFO=$(curl -s \
               -H "Accept: application/vnd.github.v3+json" \
-              -H "Authorization: Bearer ${{ secrets.PAT || secrets.GITHUB_TOKEN }}" \
+              -H "Authorization: Bearer ${{ secrets.PAT_KEY }}" \
               "https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUMBER")
             
             if command -v jq >/dev/null 2>&1; then
@@ -148,7 +148,7 @@ jobs:
                           \"fields\": [
                             {
                               \"name\": \"PR 정보\",
-                              \"value\": \"[#$PR_NUMBER]($PR_URL) | $ESCAPED_TITLE\",
+                              \"value\": \"[#$PR_NUMBER]($PR_URL) $ESCAPED_TITLE\",
                               \"inline\": false
                             },
                             {
