@@ -1,4 +1,5 @@
 name: Check PR Conflicts
+
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -12,16 +13,134 @@ jobs:
       - uses: actions/checkout@v3
         with:
           fetch-depth: 0
-      
-      - name: Check for conflicts
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check single PR conflicts (for PR events)
+        if: github.event_name == 'pull_request'
         run: |
+          echo "🔍 Checking conflicts for PR #${{ github.event.pull_request.number }}"
+          
           git fetch origin ${{ github.event.pull_request.base.ref }}
-          if ! git merge-tree $(git merge-base HEAD origin/${{ github.event.pull_request.base.ref }}) HEAD origin/${{ github.event.pull_request.base.ref }} | grep -q "<<<<<<< "; then
-            echo "No conflicts found"
-          else
-            echo "Conflicts detected!"
+          
+          # 충돌 확인
+          MERGE_BASE=$(git merge-base HEAD origin/${{ github.event.pull_request.base.ref }})
+          CONFLICTS=$(git merge-tree $MERGE_BASE HEAD origin/${{ github.event.pull_request.base.ref }} | grep -c "<<<<<<< " || echo "0")
+          
+          if [ "$CONFLICTS" -gt "0" ]; then
+            echo "⚠️ Conflicts detected in PR #${{ github.event.pull_request.number }}"
+            
             # 웹훅 호출
-            curl -X POST ${{ secrets.WEBHOOK_URL }} \
+            curl -X POST "${{ secrets.WEBHOOK_URL }}" \
               -H "Content-Type: application/json" \
-              -d '{"pr_url": "${{ github.event.pull_request.html_url }}", "title": "${{ github.event.pull_request.title }}"}'
+              -d '{
+                "event_type": "pr_conflict",
+                "pr_number": ${{ github.event.pull_request.number }},
+                "pr_url": "${{ github.event.pull_request.html_url }}",
+                "pr_title": "${{ github.event.pull_request.title }}",
+                "pr_author": "${{ github.event.pull_request.user.login }}",
+                "base_branch": "${{ github.event.pull_request.base.ref }}",
+                "head_branch": "${{ github.event.pull_request.head.ref }}",
+                "repository": "${{ github.repository }}"
+              }'
+          else
+            echo "✅ No conflicts found in PR #${{ github.event.pull_request.number }}"
           fi
+
+      - name: Check all open PRs for conflicts (for push events)
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🔍 Checking all open PRs after push to ${{ github.ref_name }}"
+          
+          # 모든 열린 PR 목록 가져오기
+          OPEN_PRS=$(gh api repos/${{ github.repository }}/pulls --jq '.[].number' | tr '\n' ' ')
+          
+          if [ -z "$OPEN_PRS" ]; then
+            echo "📝 No open PRs found"
+            exit 0
+          fi
+          
+          echo "📋 Found open PRs: $OPEN_PRS"
+          
+          CONFLICTED_PRS=""
+          
+          for PR_NUMBER in $OPEN_PRS; do
+            echo "🔍 Checking PR #$PR_NUMBER"
+            
+            # PR 정보 가져오기
+            PR_INFO=$(gh api repos/${{ github.repository }}/pulls/$PR_NUMBER)
+            PR_BASE=$(echo "$PR_INFO" | jq -r '.base.ref')
+            PR_HEAD_SHA=$(echo "$PR_INFO" | jq -r '.head.sha')
+            PR_TITLE=$(echo "$PR_INFO" | jq -r '.title')
+            PR_URL=$(echo "$PR_INFO" | jq -r '.html_url')
+            PR_AUTHOR=$(echo "$PR_INFO" | jq -r '.user.login')
+            
+            # 푸시된 브랜치가 PR의 베이스 브랜치와 같은지 확인
+            if [ "$PR_BASE" != "${{ github.ref_name }}" ]; then
+              echo "⏭️ Skipping PR #$PR_NUMBER (base: $PR_BASE, pushed: ${{ github.ref_name }})"
+              continue
+            fi
+            
+            # PR 브랜치 페치
+            git fetch origin pull/$PR_NUMBER/head:pr-$PR_NUMBER
+            git checkout pr-$PR_NUMBER
+            
+            # 충돌 확인
+            MERGE_BASE=$(git merge-base pr-$PR_NUMBER origin/$PR_BASE)
+            CONFLICTS=$(git merge-tree $MERGE_BASE pr-$PR_NUMBER origin/$PR_BASE | grep -c "<<<<<<< " || echo "0")
+            
+            if [ "$CONFLICTS" -gt "0" ]; then
+              echo "⚠️ Conflicts detected in PR #$PR_NUMBER: $PR_TITLE"
+              
+              # 충돌된 PR 목록에 추가
+              if [ -z "$CONFLICTED_PRS" ]; then
+                CONFLICTED_PRS="$PR_NUMBER"
+              else
+                CONFLICTED_PRS="$CONFLICTED_PRS,$PR_NUMBER"
+              fi
+              
+              # 개별 PR 알람 발송
+              curl -X POST "${{ secrets.WEBHOOK_URL }}" \
+                -H "Content-Type: application/json" \
+                -d '{
+                  "event_type": "push_caused_conflict",
+                  "pr_number": '"$PR_NUMBER"',
+                  "pr_url": "'"$PR_URL"'",
+                  "pr_title": "'"$PR_TITLE"'",
+                  "pr_author": "'"$PR_AUTHOR"'",
+                  "base_branch": "'"$PR_BASE"'",
+                  "push_author": "${{ github.actor }}",
+                  "push_commit": "${{ github.sha }}",
+                  "push_message": "${{ github.event.head_commit.message }}",
+                  "repository": "${{ github.repository }}"
+                }'
+            else
+              echo "✅ No conflicts in PR #$PR_NUMBER: $PR_TITLE"
+            fi
+            
+            # 다음 PR 확인을 위해 정리
+            git checkout ${{ github.ref_name }}
+            git branch -D pr-$PR_NUMBER
+          done
+          
+          # 전체 요약 알람 (충돌된 PR이 있는 경우)
+          if [ -n "$CONFLICTED_PRS" ]; then
+            echo "📊 Summary: Conflicts found in PRs: $CONFLICTED_PRS"
+            
+            curl -X POST "${{ secrets.WEBHOOK_URL }}" \
+              -H "Content-Type: application/json" \
+              -d '{
+                "event_type": "push_conflict_summary",
+                "conflicted_prs": "'"$CONFLICTED_PRS"'",
+                "total_conflicted": '"$(echo $CONFLICTED_PRS | tr ',' '\n' | wc -l)"',
+                "push_author": "${{ github.actor }}",
+                "push_branch": "${{ github.ref_name }}",
+                "push_commit": "${{ github.sha }}",
+                "push_message": "${{ github.event.head_commit.message }}",
+                "repository": "${{ github.repository }}"
+              }'
+          else
+            echo "🎉 No conflicts found in any open PRs"
+          fi
+          
