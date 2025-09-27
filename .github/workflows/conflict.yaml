@@ -29,7 +29,6 @@ jobs:
           if [ "$CONFLICTS" -gt "0" ]; then
             echo "⚠️ Conflicts detected in PR #${{ github.event.pull_request.number }}"
             
-            # 디스코드 웹훅
             ESCAPED_TITLE=$(echo "${{ github.event.pull_request.title }}" | sed 's/"/\\"/g')
             curl -X POST "${{ secrets.DISCORD_WEBHOOK_URL }}" \
               -H "Content-Type: application/json" \
@@ -78,19 +77,16 @@ jobs:
         run: |
           echo "🔍 Checking all open PRs after push to ${{ github.ref_name }}"
           
-          # GitHub API로 열린 PR 목록 가져오기
           RESPONSE=$(curl -s \
             -H "Accept: application/vnd.github.v3+json" \
             -H "Authorization: Bearer ${{ secrets.PAT }}" \
             "https://api.github.com/repos/${{ github.repository }}/pulls?state=open&per_page=100")
           
-          # API 응답 확인
           if echo "$RESPONSE" | grep -q '"message".*"Resource not accessible"'; then
             echo "🔍 API Response: $RESPONSE"
             exit 1
           fi
           
-          # PR 번호 추출
           if command -v jq >/dev/null 2>&1; then
             OPEN_PRS=$(echo "$RESPONSE" | jq -r '.[].number' 2>/dev/null | tr '\n' ' ')
           else
@@ -112,7 +108,6 @@ jobs:
             
             echo "🔍 Checking PR #$PR_NUMBER"
             
-            # PR 정보 가져오기
             PR_INFO=$(curl -s \
               -H "Accept: application/vnd.github.v3+json" \
               -H "Authorization: Bearer ${{ secrets.PAT || secrets.GITHUB_TOKEN }}" \
@@ -132,17 +127,14 @@ jobs:
               PR_HEAD_REF=$(echo "$PR_INFO" | grep -o '"head":{"[^}]*"ref":"[^"]*"' | sed 's/.*"ref":"\([^"]*\)".*/\1/')
             fi
             
-            # 푸시된 브랜치가 PR의 베이스 브랜치와 같은지 확인
             if [ "$PR_BASE" != "${{ github.ref_name }}" ]; then
               echo "⏭️ Skipping PR #$PR_NUMBER (base: $PR_BASE, pushed: ${{ github.ref_name }})"
               continue
             fi
                         
-            # PR 브랜치 패치
             if git fetch origin "refs/pull/$PR_NUMBER/head:pr-$PR_NUMBER" 2>/dev/null; then
               git checkout pr-$PR_NUMBER 2>/dev/null
               
-              # 충돌 확인
               if git fetch origin "$PR_BASE" 2>/dev/null; then
                 MERGE_BASE=$(git merge-base pr-$PR_NUMBER "origin/$PR_BASE" 2>/dev/null || echo "")
                 
@@ -152,7 +144,6 @@ jobs:
                   if [ "$CONFLICTS" -gt "0" ]; then
                     echo "⚠️ Conflicts detected in PR #$PR_NUMBER: $PR_TITLE"
                     
-                    # 충돌된 PR 목록에 추가
                     if [ -z "$CONFLICTED_PRS" ]; then
                       CONFLICTED_PRS="$PR_NUMBER"
                     else
@@ -160,7 +151,6 @@ jobs:
                     fi
                     CONFLICTED_COUNT=$((CONFLICTED_COUNT + 1))
                     
-                    # 개별 PR 디스코드 알람 발송
                     ESCAPED_TITLE=$(echo "$PR_TITLE" | sed 's/"/\\"/g')
                     ESCAPED_MESSAGE=$(echo "${{ github.event.head_commit.message }}" | sed 's/"/\\"/g')
                     curl -X POST "${{ secrets.DISCORD_WEBHOOK_URL }}" \
@@ -211,8 +201,6 @@ jobs:
                   fi
                 fi
               fi
-              
-              # 다음 PR 확인을 위해 정리
               git checkout "${{ github.ref_name }}" 2>/dev/null
               git branch -D pr-$PR_NUMBER 2>/dev/null || true
             fi
