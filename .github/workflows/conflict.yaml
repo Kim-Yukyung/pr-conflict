@@ -52,7 +52,7 @@ jobs:
                     {
                       \"name\": \"작성자\",
                       \"value\": \"${{ github.event.pull_request.user.login }}\",
-                      \"inline\": true
+                      \"inline\": false
                     },
                     {
                       \"name\": \"베이스 브랜치\",
@@ -184,7 +184,7 @@ jobs:
                             {
                               \"name\": \"작성자\",
                               \"value\": \"$PR_AUTHOR\",
-                              \"inline\": true
+                              \"inline\": false
                             },
                             {
                               \"name\": \"베이스 브랜치\",
