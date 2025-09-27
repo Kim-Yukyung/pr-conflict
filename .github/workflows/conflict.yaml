@@ -13,7 +13,7 @@ jobs:
       - uses: actions/checkout@v3
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
 
       - name: Check single PR conflicts (for PR events)
         if: github.event_name == 'pull_request'
@@ -29,19 +29,46 @@ jobs:
           if [ "$CONFLICTS" -gt "0" ]; then
             echo "⚠️ Conflicts detected in PR #${{ github.event.pull_request.number }}"
             
-            # 웹훅 호출
-            curl -X POST "${{ secrets.WEBHOOK_URL }}" \
+            # 디스코드 웹훅 호출
+            ESCAPED_TITLE=$(echo "${{ github.event.pull_request.title }}" | sed 's/"/\\"/g')
+            curl -X POST "${{ secrets.DISCORD_WEBHOOK_URL }}" \
               -H "Content-Type: application/json" \
-              -d '{
-                "event_type": "pr_conflict",
-                "pr_number": ${{ github.event.pull_request.number }},
-                "pr_url": "${{ github.event.pull_request.html_url }}",
-                "pr_title": "${{ github.event.pull_request.title }}",
-                "pr_author": "${{ github.event.pull_request.user.login }}",
-                "base_branch": "${{ github.event.pull_request.base.ref }}",
-                "head_branch": "${{ github.event.pull_request.head.ref }}",
-                "repository": "${{ github.repository }}"
-              }'
+              -d "{
+                \"embeds\": [{
+                  \"title\": \"⚠️ PR 충돌 발생!\",
+                  \"description\": \"PR에서 충돌이 감지되었습니다.\",
+                  \"color\": 15158332,
+                  \"fields\": [
+                    {
+                      \"name\": \"PR 번호\",
+                      \"value\": \"#${{ github.event.pull_request.number }}\",
+                      \"inline\": true
+                    },
+                    {
+                      \"name\": \"제목\",
+                      \"value\": \"$ESCAPED_TITLE\",
+                      \"inline\": false
+                    },
+                    {
+                      \"name\": \"작성자\",
+                      \"value\": \"${{ github.event.pull_request.user.login }}\",
+                      \"inline\": true
+                    },
+                    {
+                      \"name\": \"베이스 브랜치\",
+                      \"value\": \"${{ github.event.pull_request.base.ref }}\",
+                      \"inline\": true
+                    },
+                    {
+                      \"name\": \"헤드 브랜치\",
+                      \"value\": \"${{ github.event.pull_request.head.ref }}\",
+                      \"inline\": true
+                    }
+                  ],
+                  \"url\": \"${{ github.event.pull_request.html_url }}\",
+                  \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\"
+                }]
+              }"
           else
             echo "✅ No conflicts found in PR #${{ github.event.pull_request.number }}"
           fi
@@ -51,29 +78,35 @@ jobs:
         run: |
           echo "🔍 Checking all open PRs after push to ${{ github.ref_name }}"
           
-          # GitHub API로 열린 PR 목록 가져오기 (curl 사용)
+          # GitHub API로 열린 PR 목록 가져오기
           RESPONSE=$(curl -s \
             -H "Accept: application/vnd.github.v3+json" \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Authorization: Bearer ${{ secrets.PAT || secrets.GITHUB_TOKEN }}" \
             "https://api.github.com/repos/${{ github.repository }}/pulls?state=open&per_page=100")
           
-          # jq가 없는 경우를 대비한 파싱
+          # API 응답 확인
+          if echo "$RESPONSE" | grep -q '"message".*"Resource not accessible"'; then
+            echo "❌ API 접근 권한 없음. PAT를 설정해주세요."
+            echo "🔍 API Response: $RESPONSE"
+            exit 1
+          fi
+          
+          # PR 번호 추출
           if command -v jq >/dev/null 2>&1; then
-            OPEN_PRS=$(echo "$RESPONSE" | jq -r '.[].number' | tr '\n' ' ')
+            OPEN_PRS=$(echo "$RESPONSE" | jq -r '.[].number' 2>/dev/null | tr '\n' ' ')
           else
-            # jq 없이 파싱 (간단한 방법)
             OPEN_PRS=$(echo "$RESPONSE" | grep -o '"number":[0-9]*' | cut -d':' -f2 | tr '\n' ' ')
           fi
           
           if [ -z "$OPEN_PRS" ] || [ "$OPEN_PRS" = " " ]; then
             echo "📝 No open PRs found"
-            echo "🔍 API Response: $RESPONSE"
             exit 0
           fi
           
           echo "📋 Found open PRs: $OPEN_PRS"
           
           CONFLICTED_PRS=""
+          CONFLICTED_COUNT=0
           
           for PR_NUMBER in $OPEN_PRS; do
             if [ -z "$PR_NUMBER" ]; then
@@ -82,20 +115,19 @@ jobs:
             
             echo "🔍 Checking PR #$PR_NUMBER"
             
-            # PR 정보 가져오기 (curl 사용)
+            # PR 정보 가져오기
             PR_INFO=$(curl -s \
               -H "Accept: application/vnd.github.v3+json" \
-              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Authorization: Bearer ${{ secrets.PAT || secrets.GITHUB_TOKEN }}" \
               "https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUMBER")
             
             if command -v jq >/dev/null 2>&1; then
-              PR_BASE=$(echo "$PR_INFO" | jq -r '.base.ref')
-              PR_TITLE=$(echo "$PR_INFO" | jq -r '.title')
-              PR_URL=$(echo "$PR_INFO" | jq -r '.html_url')
-              PR_AUTHOR=$(echo "$PR_INFO" | jq -r '.user.login')
-              PR_HEAD_REF=$(echo "$PR_INFO" | jq -r '.head.ref')
+              PR_BASE=$(echo "$PR_INFO" | jq -r '.base.ref' 2>/dev/null)
+              PR_TITLE=$(echo "$PR_INFO" | jq -r '.title' 2>/dev/null)
+              PR_URL=$(echo "$PR_INFO" | jq -r '.html_url' 2>/dev/null)
+              PR_AUTHOR=$(echo "$PR_INFO" | jq -r '.user.login' 2>/dev/null)
+              PR_HEAD_REF=$(echo "$PR_INFO" | jq -r '.head.ref' 2>/dev/null)
             else
-              # jq 없이 간단 파싱
               PR_BASE=$(echo "$PR_INFO" | grep -o '"base":{"[^}]*"ref":"[^"]*"' | sed 's/.*"ref":"\([^"]*\)".*/\1/')
               PR_TITLE=$(echo "$PR_INFO" | grep -o '"title":"[^"]*"' | cut -d'"' -f4)
               PR_URL=$(echo "$PR_INFO" | grep -o '"html_url":"[^"]*"' | cut -d'"' -f4)
@@ -110,9 +142,8 @@ jobs:
             fi
             
             echo "📝 PR #$PR_NUMBER: $PR_TITLE (by $PR_AUTHOR)"
-            echo "🌿 Head branch: $PR_HEAD_REF, Base branch: $PR_BASE"
             
-            # PR 브랜치 페치 (refs/pull/PR_NUMBER/head 사용)
+            # PR 브랜치 페치
             if git fetch origin "refs/pull/$PR_NUMBER/head:pr-$PR_NUMBER" 2>/dev/null; then
               git checkout pr-$PR_NUMBER 2>/dev/null
               
@@ -132,38 +163,58 @@ jobs:
                     else
                       CONFLICTED_PRS="$CONFLICTED_PRS,$PR_NUMBER"
                     fi
+                    CONFLICTED_COUNT=$((CONFLICTED_COUNT + 1))
                     
-                    # 개별 PR 알람 발송
+                    # 개별 PR 디스코드 알람 발송
                     ESCAPED_TITLE=$(echo "$PR_TITLE" | sed 's/"/\\"/g')
-                    curl -X POST "${{ secrets.WEBHOOK_URL }}" \
+                    ESCAPED_MESSAGE=$(echo "${{ github.event.head_commit.message }}" | sed 's/"/\\"/g')
+                    curl -X POST "${{ secrets.DISCORD_WEBHOOK_URL }}" \
                       -H "Content-Type: application/json" \
                       -d "{
-                        \"event_type\": \"push_caused_conflict\",
-                        \"pr_number\": $PR_NUMBER,
-                        \"pr_url\": \"$PR_URL\",
-                        \"pr_title\": \"$ESCAPED_TITLE\",
-                        \"pr_author\": \"$PR_AUTHOR\",
-                        \"base_branch\": \"$PR_BASE\",
-                        \"push_author\": \"${{ github.actor }}\",
-                        \"push_commit\": \"${{ github.sha }}\",
-                        \"push_message\": \"${{ github.event.head_commit.message }}\",
-                        \"repository\": \"${{ github.repository }}\"
+                        \"embeds\": [{
+                          \"title\": \"⚠️ Push로 인한 PR 충돌!\",
+                          \"description\": \"${{ github.ref_name }} 브랜치에 푸시된 변경사항으로 인해 PR에서 충돌이 발생했습니다.\",
+                          \"color\": 15105570,
+                          \"fields\": [
+                            {
+                              \"name\": \"충돌된 PR\",
+                              \"value\": \"[#$PR_NUMBER $ESCAPED_TITLE]($PR_URL)\",
+                              \"inline\": false
+                            },
+                            {
+                              \"name\": \"PR 작성자\",
+                              \"value\": \"$PR_AUTHOR\",
+                              \"inline\": true
+                            },
+                            {
+                              \"name\": \"Push 작성자\",
+                              \"value\": \"${{ github.actor }}\",
+                              \"inline\": true
+                            },
+                            {
+                              \"name\": \"베이스 브랜치\",
+                              \"value\": \"$PR_BASE\",
+                              \"inline\": true
+                            },
+                            {
+                              \"name\": \"Push 메시지\",
+                              \"value\": \"$ESCAPED_MESSAGE\",
+                              \"inline\": false
+                            }
+                          ],
+                          \"url\": \"$PR_URL\",
+                          \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\"
+                        }]
                       }" 2>/dev/null || echo "⚠️ Failed to send webhook for PR #$PR_NUMBER"
                   else
                     echo "✅ No conflicts in PR #$PR_NUMBER: $PR_TITLE"
                   fi
-                else
-                  echo "❌ Could not find merge base for PR #$PR_NUMBER"
                 fi
-              else
-                echo "❌ Could not fetch base branch $PR_BASE for PR #$PR_NUMBER"
               fi
               
               # 다음 PR 확인을 위해 정리
               git checkout "${{ github.ref_name }}" 2>/dev/null
               git branch -D pr-$PR_NUMBER 2>/dev/null || true
-            else
-              echo "❌ Could not fetch PR #$PR_NUMBER branch"
             fi
           done
           
@@ -172,19 +223,43 @@ jobs:
             echo "📊 Summary: Conflicts found in PRs: $CONFLICTED_PRS"
             
             ESCAPED_MESSAGE=$(echo "${{ github.event.head_commit.message }}" | sed 's/"/\\"/g')
-            curl -X POST "${{ secrets.WEBHOOK_URL }}" \
+            curl -X POST "${{ secrets.DISCORD_WEBHOOK_URL }}" \
               -H "Content-Type: application/json" \
               -d "{
-                \"event_type\": \"push_conflict_summary\",
-                \"conflicted_prs\": \"$CONFLICTED_PRS\",
-                \"total_conflicted\": $(echo $CONFLICTED_PRS | tr ',' '\n' | wc -l),
-                \"push_author\": \"${{ github.actor }}\",
-                \"push_branch\": \"${{ github.ref_name }}\",
-                \"push_commit\": \"${{ github.sha }}\",
-                \"push_message\": \"$ESCAPED_MESSAGE\",
-                \"repository\": \"${{ github.repository }}\"
+                \"embeds\": [{
+                  \"title\": \"📊 충돌 요약\",
+                  \"description\": \"${{ github.ref_name }} 브랜치 푸시로 인해 총 $CONFLICTED_COUNT개의 PR에서 충돌이 발생했습니다.\",
+                  \"color\": 10038562,
+                  \"fields\": [
+                    {
+                      \"name\": \"충돌된 PR 목록\",
+                      \"value\": \"$CONFLICTED_PRS\",
+                      \"inline\": false
+                    },
+                    {
+                      \"name\": \"Push 작성자\",
+                      \"value\": \"${{ github.actor }}\",
+                      \"inline\": true
+                    },
+                    {
+                      \"name\": \"브랜치\",
+                      \"value\": \"${{ github.ref_name }}\",
+                      \"inline\": true
+                    },
+                    {
+                      \"name\": \"커밋\",
+                      \"value\": \"[\`$(echo ${{ github.sha }} | cut -c1-7)\`](https://github.com/${{ github.repository }}/commit/${{ github.sha }})\",
+                      \"inline\": true
+                    },
+                    {
+                      \"name\": \"커밋 메시지\",
+                      \"value\": \"$ESCAPED_MESSAGE\",
+                      \"inline\": false
+                    }
+                  ],
+                  \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\"
+                }]
               }" 2>/dev/null || echo "⚠️ Failed to send summary webhook"
           else
             echo "🎉 No conflicts found in any open PRs"
           fi
-          
