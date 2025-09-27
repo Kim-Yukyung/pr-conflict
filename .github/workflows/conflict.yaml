@@ -41,13 +41,13 @@ jobs:
                   \"fields\": [
                     {
                       \"name\": \"PR 번호\",
-                      \"value\": \"#${{ github.event.pull_request.number }}\",
+                      \"value\": \"[#${{ github.event.pull_request.number }}](${{ github.event.pull_request.html_url }})\",
                       \"inline\": true
                     },
                     {
-                      \"name\": \"제목\",
+                      \"name\": \"PR 제목\",
                       \"value\": \"$ESCAPED_TITLE\",
-                      \"inline\": false
+                      \"inline\": true
                     },
                     {
                       \"name\": \"작성자\",
@@ -173,13 +173,13 @@ jobs:
                           \"fields\": [
                             {
                               \"name\": \"PR 번호\",
-                              \"value\": \"#$PR_NUMBER\",
+                              \"value\": \"[#$PR_NUMBER]($PR_URL)\",
                               \"inline\": true
                             },
                             {
-                              \"name\": \"제목\",
+                              \"name\": \"PR 제목\",
                               \"value\": \"$ESCAPED_TITLE\",
-                              \"inline\": false
+                              \"inline\": true
                             },
                             {
                               \"name\": \"작성자\",
@@ -194,11 +194,6 @@ jobs:
                             {
                               \"name\": \"헤드 브랜치\",
                               \"value\": \"$PR_HEAD_REF\",
-                              \"inline\": true
-                            },
-                            {
-                              \"name\": \"Push 작성자\",
-                              \"value\": \"${{ github.actor }}\",
                               \"inline\": true
                             },
                             {
