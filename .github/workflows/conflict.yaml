@@ -39,29 +39,14 @@ jobs:
                   \"color\": 15158332,
                   \"fields\": [
                     {
-                      \"name\": \"PR 번호\",
-                      \"value\": \"[#${{ github.event.pull_request.number }}](${{ github.event.pull_request.html_url }})\",
-                      \"inline\": true
+                      \"name\": \"PR 정보\",
+                      \"value\": \"[#${{ github.event.pull_request.number }}](${{ github.event.pull_request.html_url }}) | $ESCAPED_TITLE\",
+                      \"inline\": false
                     },
                     {
-                      \"name\": \"PR 제목\",
-                      \"value\": \"$ESCAPED_TITLE\",
-                      \"inline\": true
-                    },
-                    {
-                      \"name\": \"작성자\",
-                      \"value\": \"${{ github.event.pull_request.user.login }}\",
-                      \"inline\": true
-                    },
-                    {
-                      \"name\": \"베이스 브랜치\",
-                      \"value\": \"${{ github.event.pull_request.base.ref }}\",
-                      \"inline\": true
-                    },
-                    {
-                      \"name\": \"헤드 브랜치\",
-                      \"value\": \"${{ github.event.pull_request.head.ref }}\",
-                      \"inline\": true
+                      \"name\": \"브랜치 정보\",
+                      \"value\": \"${{ github.event.pull_request.user.login }} | ${{ github.event.pull_request.head.ref }} → ${{ github.event.pull_request.base.ref }}\",
+                      \"inline\": false
                     }
                   ],
                   \"url\": \"${{ github.event.pull_request.html_url }}\",
@@ -162,29 +147,14 @@ jobs:
                           \"color\": 15158332,
                           \"fields\": [
                             {
-                              \"name\": \"PR 번호\",
-                              \"value\": \"[#$PR_NUMBER]($PR_URL)\",
-                              \"inline\": true
+                              \"name\": \"PR 정보\",
+                              \"value\": \"[#$PR_NUMBER]($PR_URL) | $ESCAPED_TITLE\",
+                              \"inline\": false
                             },
                             {
-                              \"name\": \"PR 제목\",
-                              \"value\": \"$ESCAPED_TITLE\",
-                              \"inline\": true
-                            },
-                            {
-                              \"name\": \"작성자\",
-                              \"value\": \"$PR_AUTHOR\",
-                              \"inline\": true
-                            },
-                            {
-                              \"name\": \"베이스 브랜치\",
-                              \"value\": \"$PR_BASE\",
-                              \"inline\": true
-                            },
-                            {
-                              \"name\": \"헤드 브랜치\",
-                              \"value\": \"$PR_HEAD_REF\",
-                              \"inline\": true
+                              \"name\": \"브랜치 정보\",
+                              \"value\": \"$PR_AUTHOR | $PR_HEAD_REF → $PR_BASE\",
+                              \"inline\": false
                             },
                             {
                               \"name\": \"Push 커밋 메시지\",
@@ -192,7 +162,6 @@ jobs:
                               \"inline\": false
                             }
                           ],
-                          \"url\": \"$PR_URL\",
                           \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\"
                         }]
                       }" 2>/dev/null || echo "⚠️ Failed to send webhook for PR #$PR_NUMBER"
