@@ -1,0 +1,27 @@
+name: Check PR Conflicts
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main, develop]
+
+jobs:
+  check-conflicts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      
+      - name: Check for conflicts
+        run: |
+          git fetch origin ${{ github.event.pull_request.base.ref }}
+          if ! git merge-tree $(git merge-base HEAD origin/${{ github.event.pull_request.base.ref }}) HEAD origin/${{ github.event.pull_request.base.ref }} | grep -q "<<<<<<< "; then
+            echo "No conflicts found"
+          else
+            echo "Conflicts detected!"
+            # 웹훅 호출
+            curl -X POST ${{ secrets.WEBHOOK_URL }} \
+              -H "Content-Type: application/json" \
+              -d '{"pr_url": "${{ github.event.pull_request.html_url }}", "title": "${{ github.event.pull_request.title }}"}'
+          fi
