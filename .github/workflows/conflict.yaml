@@ -9,174 +9,171 @@ on:
 jobs:
   check-conflicts:
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+      contents: read
+    
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.PAT_KEY }}
 
-      - name: Check single PR conflicts (for PR events)
-        if: github.event_name == 'pull_request'
+      - name: Setup
+        id: setup
         run: |
-          echo "🔍 Checking conflicts for PR #${{ github.event.pull_request.number }}"
-          
-          git fetch origin ${{ github.event.pull_request.base.ref }}
-          
-          # 충돌 확인
-          MERGE_BASE=$(git merge-base HEAD origin/${{ github.event.pull_request.base.ref }})
-          CONFLICTS=$(git merge-tree $MERGE_BASE HEAD origin/${{ github.event.pull_request.base.ref }} | grep -c "<<<<<<< " || echo "0")
-          
-          if [ "$CONFLICTS" -gt "0" ]; then
-            echo "⚠️ Conflicts detected in PR #${{ github.event.pull_request.number }}"
-            
-            ESCAPED_TITLE=$(echo "${{ github.event.pull_request.title }}" | sed 's/"/\\"/g')
-            curl -X POST "${{ secrets.DISCORD_WEBHOOK_URL }}" \
-              -H "Content-Type: application/json" \
-              -d "{
-                \"embeds\": [{
-                  \"title\": \"⚠️ PR 충돌 발생!\",
-                  \"description\": \"PR에서 충돌이 감지되었습니다.\",
-                  \"color\": 15158332,
-                  \"fields\": [
-                    {
-                      \"name\": \"PR 정보\",
-                      \"value\": \"[#${{ github.event.pull_request.number }}](${{ github.event.pull_request.html_url }}) $ESCAPED_TITLE\",
-                      \"inline\": false
-                    },
-                    {
-                      \"name\": \"브랜치 정보\",
-                      \"value\": \"${{ github.event.pull_request.user.login }} | ${{ github.event.pull_request.head.ref }} → ${{ github.event.pull_request.base.ref }}\",
-                      \"inline\": false
-                    }
-                  ],
-                  \"url\": \"${{ github.event.pull_request.html_url }}\",
-                  \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\"
-                }]
-              }"
-          else
-            echo "✅ No conflicts found in PR #${{ github.event.pull_request.number }}"
+          if ! command -v jq &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y jq
           fi
+          echo "jq_available=true" >> $GITHUB_OUTPUT
 
-      - name: Check all open PRs conflicts (for push events)
-        if: github.event_name == 'push'
+      - name: Check single PR conflicts
+        if: github.event_name == 'pull_request'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_HEAD: ${{ github.event.pull_request.head.ref }}
+          PR_BASE: ${{ github.event.pull_request.base.ref }}
+          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          echo "🔍 Checking all open PRs after push to ${{ github.ref_name }}"
+          set -e
+          echo "🔍 Checking conflicts for PR #${PR_NUMBER}"
           
-          RESPONSE=$(curl -s \
-            -H "Accept: application/vnd.github.v3+json" \
-            -H "Authorization: Bearer ${{ secrets.PAT_KEY }}" \
-            "https://api.github.com/repos/${{ github.repository }}/pulls?state=open&per_page=100")
-          
-          if echo "$RESPONSE" | grep -q '"message".*"Resource not accessible"'; then
-            echo "🔍 API Response: $RESPONSE"
+          if ! git fetch origin "${PR_BASE}"; then
+            echo "❌ Failed to fetch base branch"
             exit 1
           fi
           
-          if command -v jq >/dev/null 2>&1; then
-            OPEN_PRS=$(echo "$RESPONSE" | jq -r '.[].number' 2>/dev/null | tr '\n' ' ')
-          else
-            OPEN_PRS=$(echo "$RESPONSE" | grep -o '"number":[0-9]*' | cut -d':' -f2 | tr '\n' ' ')
+          MERGE_BASE=$(git merge-base HEAD "origin/${PR_BASE}" 2>/dev/null || echo "")
+          if [ -z "$MERGE_BASE" ]; then
+            echo "❌ Could not find merge base"
+            exit 1
           fi
           
-          if [ -z "$OPEN_PRS" ] || [ "$OPEN_PRS" = " " ]; then
-            echo "📝 No open PRs found"
+          CONFLICTS=$(git merge-tree "$MERGE_BASE" HEAD "origin/${PR_BASE}" | grep -c "<<<<<<< " || echo "0")
+          
+          if [ "$CONFLICTS" -gt "0" ]; then
+            echo "⚠️ Conflicts detected in PR #${PR_NUMBER}"
+            
+            PAYLOAD=$(jq -n \
+              --arg title "⚠️ PR 충돌 발생!" \
+              --arg desc "PR에서 충돌이 감지되었습니다." \
+              --arg pr_info "[#${PR_NUMBER}](${PR_URL}) ${PR_TITLE}" \
+              --arg branch_info "${PR_AUTHOR} | ${PR_HEAD} → ${PR_BASE}" \
+              --arg url "${PR_URL}" \
+              --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
+              '{
+                embeds: [{
+                  title: $title,
+                  description: $desc,
+                  color: 15158332,
+                  fields: [
+                    { name: "PR 정보", value: $pr_info, inline: false },
+                    { name: "브랜치 정보", value: $branch_info, inline: false }
+                  ],
+                  url: $url,
+                  timestamp: $timestamp
+                }]
+              }')
+            
+            if ! curl -X POST "${WEBHOOK_URL}" \
+              -H "Content-Type: application/json" \
+              -d "$PAYLOAD" \
+              --fail --silent --show-error; then
+              echo "⚠️ Failed to send Discord notification"
+            fi
+          else
+            echo "✅ No conflicts found in PR #${PR_NUMBER}"
+          fi
+
+      - name: Check all open PRs conflicts
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.PAT_KEY }}
+          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          PUSHED_BRANCH: ${{ github.ref_name }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          set -e
+          echo "🔍 Checking all open PRs after push to ${PUSHED_BRANCH}"
+          
+          if ! OPEN_PRS=$(gh pr list --state open --base "${PUSHED_BRANCH}" --json number --jq '.[].number'); then
+            echo "❌ Failed to fetch open PRs"
+            exit 1
+          fi
+          
+          if [ -z "$OPEN_PRS" ]; then
+            echo "📝 No open PRs found for branch ${PUSHED_BRANCH}"
             exit 0
           fi
-                    
-          CONFLICTED_PRS=""
+          
           CONFLICTED_COUNT=0
           
-          for PR_NUMBER in $OPEN_PRS; do
-            if [ -z "$PR_NUMBER" ]; then
-              continue
+          check_pr() {
+            local PR_NUMBER=$1
+            echo "🔍 Checking PR #${PR_NUMBER}"
+            
+            PR_INFO=$(gh pr view "$PR_NUMBER" --json title,url,author,headRefName,baseRefName)
+            
+            PR_TITLE=$(echo "$PR_INFO" | jq -r '.title')
+            PR_URL=$(echo "$PR_INFO" | jq -r '.url')
+            PR_AUTHOR=$(echo "$PR_INFO" | jq -r '.author.login')
+            PR_HEAD=$(echo "$PR_INFO" | jq -r '.headRefName')
+            PR_BASE=$(echo "$PR_INFO" | jq -r '.baseRefName')
+            
+            if ! git fetch origin "refs/pull/${PR_NUMBER}/head:pr-${PR_NUMBER}" 2>/dev/null; then
+              echo "⚠️ Failed to fetch PR #${PR_NUMBER}"
+              return
             fi
             
-            echo "🔍 Checking PR #$PR_NUMBER"
+            MERGE_BASE=$(git merge-base "pr-${PR_NUMBER}" "origin/${PR_BASE}" 2>/dev/null || echo "")
             
-            PR_INFO=$(curl -s \
-              -H "Accept: application/vnd.github.v3+json" \
-              -H "Authorization: Bearer ${{ secrets.PAT_KEY }}" \
-              "https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUMBER")
-            
-            if command -v jq >/dev/null 2>&1; then
-              PR_BASE=$(echo "$PR_INFO" | jq -r '.base.ref' 2>/dev/null)
-              PR_TITLE=$(echo "$PR_INFO" | jq -r '.title' 2>/dev/null)
-              PR_URL=$(echo "$PR_INFO" | jq -r '.html_url' 2>/dev/null)
-              PR_AUTHOR=$(echo "$PR_INFO" | jq -r '.user.login' 2>/dev/null)
-              PR_HEAD_REF=$(echo "$PR_INFO" | jq -r '.head.ref' 2>/dev/null)
-            else
-              PR_BASE=$(echo "$PR_INFO" | grep -o '"base":{"[^}]*"ref":"[^"]*"' | sed 's/.*"ref":"\([^"]*\)".*/\1/')
-              PR_TITLE=$(echo "$PR_INFO" | grep -o '"title":"[^"]*"' | cut -d'"' -f4)
-              PR_URL=$(echo "$PR_INFO" | grep -o '"html_url":"[^"]*"' | cut -d'"' -f4)
-              PR_AUTHOR=$(echo "$PR_INFO" | grep -o '"login":"[^"]*"' | head -1 | cut -d'"' -f4)
-              PR_HEAD_REF=$(echo "$PR_INFO" | grep -o '"head":{"[^}]*"ref":"[^"]*"' | sed 's/.*"ref":"\([^"]*\)".*/\1/')
-            fi
-            
-            if [ "$PR_BASE" != "${{ github.ref_name }}" ]; then
-              echo "⏭️ Skipping PR #$PR_NUMBER (base: $PR_BASE, pushed: ${{ github.ref_name }})"
-              continue
-            fi
-                        
-            if git fetch origin "refs/pull/$PR_NUMBER/head:pr-$PR_NUMBER" 2>/dev/null; then
-              git checkout pr-$PR_NUMBER 2>/dev/null
+            if [ -n "$MERGE_BASE" ]; then
+              CONFLICTS=$(git merge-tree "$MERGE_BASE" "pr-${PR_NUMBER}" "origin/${PR_BASE}" 2>/dev/null | grep -c "<<<<<<< " || echo "0")
               
-              if git fetch origin "$PR_BASE" 2>/dev/null; then
-                MERGE_BASE=$(git merge-base pr-$PR_NUMBER "origin/$PR_BASE" 2>/dev/null || echo "")
+              if [ "$CONFLICTS" -gt "0" ]; then
+                echo "⚠️ Conflicts detected in PR #${PR_NUMBER}: ${PR_TITLE}"
                 
-                if [ -n "$MERGE_BASE" ]; then
-                  CONFLICTS=$(git merge-tree "$MERGE_BASE" pr-$PR_NUMBER "origin/$PR_BASE" 2>/dev/null | grep -c "<<<<<<< " || echo "0")
-                  
-                  if [ "$CONFLICTS" -gt "0" ]; then
-                    echo "⚠️ Conflicts detected in PR #$PR_NUMBER: $PR_TITLE"
-                    
-                    if [ -z "$CONFLICTED_PRS" ]; then
-                      CONFLICTED_PRS="$PR_NUMBER"
-                    else
-                      CONFLICTED_PRS="$CONFLICTED_PRS,$PR_NUMBER"
-                    fi
-                    CONFLICTED_COUNT=$((CONFLICTED_COUNT + 1))
-                    
-                    ESCAPED_TITLE=$(echo "$PR_TITLE" | sed 's/"/\\"/g')
-                    ESCAPED_MESSAGE=$(echo "${{ github.event.head_commit.message }}" | sed 's/"/\\"/g')
-                    curl -X POST "${{ secrets.DISCORD_WEBHOOK_URL }}" \
-                      -H "Content-Type: application/json" \
-                      -d "{
-                        \"embeds\": [{
-                          \"title\": \"⚠️ Push로 인한 PR 충돌!\",
-                          \"description\": \"${{ github.ref_name }} 브랜치에 푸시된 변경사항으로 인해 PR에서 충돌이 발생했습니다.\",
-                          \"color\": 15158332,
-                          \"fields\": [
-                            {
-                              \"name\": \"PR 정보\",
-                              \"value\": \"[#$PR_NUMBER]($PR_URL) $ESCAPED_TITLE\",
-                              \"inline\": false
-                            },
-                            {
-                              \"name\": \"브랜치 정보\",
-                              \"value\": \"$PR_AUTHOR | $PR_HEAD_REF → $PR_BASE\",
-                              \"inline\": false
-                            },
-                            {
-                              \"name\": \"Push 커밋 메시지\",
-                              \"value\": \"$ESCAPED_MESSAGE\",
-                              \"inline\": false
-                            }
-                          ],
-                          \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\"
-                        }]
-                      }" 2>/dev/null || echo "⚠️ Failed to send webhook for PR #$PR_NUMBER"
-                  else
-                    echo "✅ No conflicts in PR #$PR_NUMBER: $PR_TITLE"
-                  fi
-                fi
+                PAYLOAD=$(jq -n \
+                  --arg desc "${PUSHED_BRANCH} 브랜치에 푸시된 변경사항으로 인해 PR에서 충돌이 발생했습니다." \
+                  --arg pr_info "[#${PR_NUMBER}](${PR_URL}) ${PR_TITLE}" \
+                  --arg branch_info "${PR_AUTHOR} | ${PR_HEAD} → ${PR_BASE}" \
+                  --arg commit_msg "${COMMIT_MESSAGE}" \
+                  --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
+                  '{
+                    embeds: [{
+                      title: "⚠️ Push로 인한 PR 충돌!",
+                      description: $desc,
+                      color: 15158332,
+                      fields: [
+                        { name: "PR 정보", value: $pr_info, inline: false },
+                        { name: "브랜치 정보", value: $branch_info, inline: false },
+                        { name: "Push 커밋 메시지", value: $commit_msg, inline: false }
+                      ],
+                      timestamp: $timestamp
+                    }]
+                  }')
+                
+                curl -X POST "${WEBHOOK_URL}" \
+                  -H "Content-Type: application/json" \
+                  -d "$PAYLOAD" \
+                  --fail --silent --show-error || echo "⚠️ Failed to send webhook for PR #${PR_NUMBER}"
+                
+                return 1
+              else
+                echo "✅ No conflicts in PR #${PR_NUMBER}"
               fi
-              git checkout "${{ github.ref_name }}" 2>/dev/null
-              git branch -D pr-$PR_NUMBER 2>/dev/null || true
             fi
-          done
+            
+            git branch -D "pr-${PR_NUMBER}" 2>/dev/null || true
+          }
           
-          if [ -n "$CONFLICTED_PRS" ]; then
-            echo "🔍 Conflicts detected in $CONFLICTED_COUNT PRs: $CONFLICTED_PRS"
-          else
-            echo "✅ No conflicts detected in any PRs"
-          fi
+          export -f check_pr
+          export GH_TOKEN WEBHOOK_URL PUSHED_BRANCH COMMIT_MESSAGE
+          
+          echo "$OPEN_PRS" | xargs -I {} -P 5 bash -c 'check_pr "$@"' _ {}
+          
+          echo "✅ Conflict check completed"
+          
